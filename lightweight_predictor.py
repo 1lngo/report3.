@@ -25,45 +25,30 @@ except ImportError:
 
 def calculate_trend_score(prices: pd.Series, lookback: int = 60) -> float:
     """
-    基于技术指标计算趋势得分（-1到1之间）
-    正值表示看涨，负值表示看跌，0表示震荡
+    基于近期实际涨跌预测未来（简单有效，不会总是上涨）
     """
     if len(prices) < lookback:
         return 0.0
 
     recent = prices.tail(lookback)
 
-    # 1. 短期 vs 长期均线（5日 vs 20日）
-    ma_5 = recent.tail(5).mean()
-    ma_20 = recent.mean()
-    ma_score = (ma_5 / ma_20 - 1) * 10  # 放大到合理范围
+    # 方法：用 lookback 期间的实际累计收益作为趋势指标
+    # 近期涨了 => 预测涨，近期跌了 => 预测跌
+    cum_return = (recent.iloc[-1] / recent.iloc[0]) - 1
 
-    # 2. 价格位置（近期高低点之间）
-    price_pos = (recent.iloc[-1] - recent.min()) / (recent.max() - recent.min() + 1e-10)
-    # 0表示在低点，1表示在高点
-    # 转换为得分：低点时看涨，高点时看跌
-    position_score = (price_pos - 0.5) * -1  # 反转
-
-    # 3. 近期动量（最近5天 vs 前5天）
+    # 动量：最近 5 天 vs 前 5 天
     if len(recent) >= 10:
         recent_5d = recent.tail(5).mean()
-        prev_5d = recent.tail(10).head(5).mean()
-        momentum_score = (recent_5d / prev_5d - 1) * 10
+        prev_5d = recent.head(len(recent)-5).tail(5).mean()
+        momentum = (recent_5d / prev_5d - 1)
     else:
-        momentum_score = 0
+        momentum = 0
 
-    # 4. 波动率调整（波动大时降低信心）
-    returns = recent.pct_change().dropna()
-    volatility = returns.std() if len(returns) > 0 else 0
-    vol_adjustment = 1 / (1 + volatility * 10)  # 波动大时降低得分
+    # 简单加权：主要看实际走势，加上近期动量
+    trend_score = cum_return * 0.7 + momentum * 0.3
 
-    # 综合得分（加权平均）
-    raw_score = (ma_score * 0.3 + position_score * 0.4 + momentum_score * 0.3)
-
-    # 限制在合理范围并应用波动率调整
-    final_score = np.clip(raw_score, -0.3, 0.3) * vol_adjustment
-
-    return float(final_score)
+    # 限制在合理范围（-30% 到 +30%）
+    return float(np.clip(trend_score, -0.3, 0.3))
 
 
 def lightweight_forecast(
@@ -95,10 +80,9 @@ def lightweight_forecast(
             # 计算趋势得分
             trend_score = calculate_trend_score(prices, lookback)
 
-            # 根据趋势得分预测未来收益
-            # 假设7天累计收益 = 趋势得分 * 调整系数
+            # 根据趋势得分预测未来收益（直接使用趋势得分作为预测）
             # 限制在合理范围（-15%到+15%）
-            pred_cum_return = np.clip(trend_score * 0.5, -0.15, 0.15)
+            pred_cum_return = np.clip(trend_score, -0.15, 0.15)
 
             # 日均收益
             pred_daily_return = pred_cum_return / pred_len
